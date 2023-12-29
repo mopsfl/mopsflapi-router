@@ -10,9 +10,9 @@ class Route {
     _allowed_origins = ["mopsfl.github.io"]
     _expose_headers = []
 
-    _forceProduction = _devBuild
+    _forceProduction = false
 
-    _callback_url = _devBuild && !this._forceProduction ? "http://localhost:6968/api/goofyuglifier/" : process.env.MOPSFLWEATHER_ENDPOINT
+    _callback_url = _devBuild && !this._forceProduction ? "http://localhost:6968/api/v1/data/" : process.env.MOPSFLWEATHER_ENDPOINT
     _callback = async (req: Request, res: Response, _reqInfo: Object) => {
         try {
             const _query_data: any = req.query.d,
@@ -20,16 +20,16 @@ class Route {
 
             if (data.func === "currentweather") {
                 if (data.location && !(data.lat || data.lon)) {
-                    const _response = await fetch(`${this._callback_url}currentweather?location=${data.location}&auth=${process.env.MOPSFLWEATHER_AUTH}`).then(res => res.json())
+                    const _response = await fetch(`${this._callback_url}currentweather?location=${data.location}&auth=${process.env.MOPSFLWEATHER_AUTH}`, { headers: { "Request-Info": JSON.stringify(_reqInfo) } }).then(res => res.json())
                     return [_response.headers, _response]
                 } else if (data.lat && data.lon) {
-                    const _response = await fetch(`${this._callback_url}currentweather?lat=${data.lat}&lon=${data.lon}&auth=${process.env.MOPSFLWEATHER_AUTH}`).then(res => res.json())
+                    const _response = await fetch(`${this._callback_url}currentweather?lat=${data.lat}&lon=${data.lon}&auth=${process.env.MOPSFLWEATHER_AUTH}`, { headers: { "Request-Info": JSON.stringify(_reqInfo) } }).then(res => res.json())
                     return [_response.headers, _response]
                 } else {
                     return { code: 400 }
                 }
             } else if (data.func === "searchcity" && data.name) {
-                const _response = await fetch(`${this._callback_url}searchcity?name=${data.name}&auth=${process.env.MOPSFLWEATHER_AUTH}`).then(res => res.json())
+                const _response = await fetch(`${this._callback_url}searchcity?name=${data.name}&auth=${process.env.MOPSFLWEATHER_AUTH}`, { headers: { "Request-Info": JSON.stringify(_reqInfo) } }).then(res => res.json())
                 return [_response.headers, _response]
             } else {
                 return [null, { code: 400 }]
