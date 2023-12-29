@@ -1,10 +1,11 @@
 import express, { Request, Response } from "express"
 import config from "dotenv"
 import cors from "cors"
+import rateLimit from "express-rate-limit"
 import { Cache, MemoryCache, caching } from "cache-manager"
 import bodyParser from "body-parser"
 import fs from "fs"
-import { gunzipSync, gzipSync } from "zlib";
+import { gunzipSync } from "zlib";
 
 config.config()
 const app = express(),
@@ -26,7 +27,9 @@ app.use((req, res, next) => {
 })
 app.use(bodyParser.text({ type: "*/*", limit: "2MB" }))
 app.use(cors())
+app.use(rateLimit({ max: 100, validate: { xForwardedForHeader: false } }))
 app.get("/", (req, res) => res.sendStatus(200))
+
 app.get("/api/ping", async (req, res) => {
     const resp = await fetch(
         process.env.GOOFYLUAUGLIFIER_ENDPOINT.replace(/\/api.*/gm, "") + `?auth=${process.env.apiauth}&automatic_ping=true`
@@ -45,7 +48,15 @@ app.listen(process.env.PORT, async () => {
             Object.values(RequestMethod_Functions).forEach((_method: RequestMethod) => {
                 if (!app[_method]) return
                 app[_method](`/api/${_route._routeName}`, async (req: Request, res: Response) => {
+                    if (!_route._enabled) return res.status(422).json({ code: 422, error: "Unprocessable Entity", message: "This route is currently disabled." })
                     if (!_route._allowed_methods.includes(_method)) return res.sendStatus(405)
+                    if (_route._allowed_origins?.length > 0) {
+                        const _origin = (req.headers.origin || req.headers.referer || "").replace(/(http|https)\:\/\/|\/$/g, "")
+                        if (!_route._allowed_origins.includes(_origin) && !_devBuild) {
+                            console.log({ message: `Request from ${req.socket.remoteAddress} blocked.`, code: 401, origin: `Origin: ${_origin}` });
+                            return res.sendStatus(401)
+                        }
+                    }
                     try {
                         let _block_request = false,
                             _endpoint_query: any = req.query.e || ""
@@ -67,11 +78,18 @@ app.listen(process.env.PORT, async () => {
                         }
                         if (_block_request) return
                         console.log(`Request from ${req.socket.remoteAddress} >`, _route);
-                        const _callback_res = await _route._callback(req, res, { route: _route, ip: req.socket.remoteAddress })
-                        res.status(_callback_res !== undefined ? _callback_res.code ? _callback_res.code : 200 : 500).send(_callback_res)
+                        const [_callback_headers, _callback_res]: (Headers | any)[] = await _route._callback(req, res, { route: _route, ip: req.socket.remoteAddress })
+                        if (_callback_headers instanceof Headers) {
+                            _callback_headers?.forEach((value, index) => {
+                                if (!_route._expose_headers[index]) res.setHeader(index, value)
+                            })
+                        }
+                        res.status(_callback_res !== undefined ? _callback_res.code ? _callback_res.code : 200 : 500)
+                            .setHeader("Access-Control-Expose-Headers", _route._expose_headers)
+                            .send(_callback_res)
                     } catch (error) {
                         console.error(error)
-                        res.status(500).send(error)
+                        res.status(500).send(error || error.message)
                     }
                 })
             })
@@ -82,79 +100,14 @@ app.listen(process.env.PORT, async () => {
     })
 })
 
-// Server Status API (uptime robot api)
-
-let _lastMonitorRequestTime = 0,
-    _lastMonitorResponse = null;
-
-app.get("/api/mopsfl/getServerStatus", async (req, res) => {
-    try {
-        let _data = null;
-        if (
-            _lastMonitorRequestTime === 0 ||
-            (Date.now() - _lastMonitorRequestTime > 60000 &&
-                _lastMonitorResponse != null)
-        ) {
-            await fetch(process.env.uptimeRobot_getMonitors, { method: "POST" })
-                .then((res) => res.json())
-                .then((data) => {
-                    _lastMonitorResponse = data;
-                    _lastMonitorRequestTime = Date.now();
-                    _data = data;
-                    console.log("using fetched status data");
-                })
-                .catch((_err) => {
-                    console.error(_err);
-                    res.status(500).json({ code: 500, message: _err });
-                });
-        } else {
-            _data = _lastMonitorResponse;
-            console.log("using cached status data");
-        }
-
-        if (!_data?.monitors)
-            return res
-                .status(500)
-                .json({ code: 500, message: "Failed to get monitor statuses" });
-        let _downMonitors = [];
-        _data.monitors?.forEach((_m) => {
-            if (_m.status != 0) {
-                _downMonitors.push({
-                    name: _m.friendly_name,
-                    id: _m.id,
-                    down: _m.status === 9 ? true : false,
-                });
-            }
-        });
-        res.json(_downMonitors);
-    } catch (error) {
-        res.status(500).send(error)
-        console.error(error);
-    }
-});
-
-app.get("/api/mopsfl/v2/getServerStatus", async (req, res) => {
-    const _serverUUIDs: Array<any> = JSON.parse(process.env.SERVER_UUIDS),
-        _responses = []
-
-    _serverUUIDs.forEach(async (uuid, idx) => {
-        await fetch(`${process.env.SERVER_RESOURCES_ENDPOINT}${uuid}`, {
-            headers: { cookie: process.env.SECRET_SESSION }
-        }).then(async res => await res.json()).then(data => {
-            _responses.push(data)
-            if ((idx + 1) === _serverUUIDs.length) res.json(_responses)
-        }).catch(error => {
-            console.error(error)
-        })
-    });
-})
-
 export interface Route {
     _routeName: string,
     _allowed_methods: RequestMethods,
     _required_headers: Array<string>,
+    _allowed_origins: Array<string>,
+    _expose_headers: Array<string>,
     _callback: Function,
-    _enabled?: boolean,
+    _enabled: boolean,
 }
 
 export type RequestMethod = "get" | "post" | "options" | "delete"
